@@ -10,7 +10,7 @@ contract LendingPool {
     error BadRepay();
     error OverBalance();
 
-    uint256 constant LTV = 75e16; // 75% max borrow threshold
+    uint256 constant LTV = 75e16; // 75% max borrow thresold
     uint256 constant WAD = 1e18;  // 18-decimal precision base
 
     struct Position {

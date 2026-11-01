@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20; 
+
+interface IERC20 {
+ function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+ function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
+contract SimpleAMM {
+  error Zero();
+  error InsufficientLiquidity();
+  error TransferFailed();
+
+  IERC20 public immutable token;
+  uint256 public reserveToken;
+  uint256 public reserveETH;
+
+  constructor(address _token){ 
+  
+  token = IERC20(_token);
+  }
+  function addLiquidty(uint256 tokenAmount) external payable {
+  if (msg.value == 0 || tokenAmount == 0) revert Zero();
+  
+  bool success = token.transferFrom(msg.sender, address(this), tokenAmount);
+  if (!success) revert TransferFailed();
+
+  //update token reserve
+  reserveToken += tokenAmount;
+  reserveETH += msg.value;
+  }
+
+  function swapTokenForETH(uint256 tokenAmount) external returns (uint256 ethAmountOut) {
+   if (tokenAmount == 0) revert Zero();
+
+   uint256 tokenReserve = reserveToken;
+   uint256 ethreserve = reserveETH;
+
+   ethAmountOut = (ethreserve * tokenAmount) / (tokenReserve + tokenAmount);
+   if (ethAmountOut == 0 || ethAmountOut >= ethreserve) revert InsufficientLiquidity();
+
+   // Transfer tokens
+   bool success = token.transferFrom(msg.sender, address(this), tokenAmount);
+   if (!success) revert TransferFailed();
+
+   (bool sent, ) = payable(msg.sender).call{value: ethAmountOut}("");
+   if (!sent) revert TransferFailed();
+
+   reserveToken += tokenAmount;
+   reserveETH -= ethAmountOut;
+  }
+   function swapETHForToken() external payable returns (uint256 tokenAmountOut) {
+    if (msg.value == 0) revert Zero();
+
+    uint256 tokenReserve = reserveToken;
+    uint256 ethReserve = reserveETH;
+   
+    // Calculate token amount 
+    tokenAmountOut = (tokenReserve * msg.value) / (ethReserve + msg.value);
+    if (tokenAmountOut == 0 || tokenAmountOut >= tokenReserve) revert InsufficientLiquidity();
+
+    bool success = token.transfer(msg.sender, tokenAmountOut);
+    if (!success) revert TransferFailed();
+
+    reserveToken -= tokenAmountOut;
+    reserveETH += msg.value;
+    }
+
+
+
+
+
+
+     
+   }
