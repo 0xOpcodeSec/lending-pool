@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract LendingPool {
+    error Zero();
+    error Fail();
+    error Healthy();
+    error LowCollateral();
+    error Reentrant();
+    error BadRepay();
+    error OverBalance();
+
+    uint256 constant LTV = 75e16; // 75% max borrow threshold
+    uint256 constant WAD = 1e18;  // 18-decimal precision base
+
+    struct Position {
+        uint256 collateral;
+        uint256 debt;
+    }
+
+    mapping(address => Position) public positions;
+    bool locked; // simple reentrancy flag
+
+    event Deposit(address indexed user, uint256 amount);
+    event Borrow(address indexed user, uint256 amount);
+    event Repay(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event Liquidated(address indexed user, address indexed liquidator, uint256 amount);
+
+    // guard against reentrancy attacks
+    modifier lock() {
+        if (locked) revert Reentrant();
+        locked = true;
+        _;
+        locked = false;
+    }
+
+    receive() external payable {
+        revert Zero();
+    }
+
+    function deposit() external payable lock {
+        if (msg.value == 0) revert Zero();
+        positions[msg.sender].collateral += msg.value;
+        emit Deposit(msg.sender, msg.value);
+    }
+
+    function withdraw(uint256 amount) external lock {
+        if (amount == 0) revert Zero();
+        Position storage p = positions[msg.sender];
+      
+      if (amount > p.collateral) revert OverBalance();
+        
+        uint256 rem = p.collateral - amount;
+        // ensure remaining collateral still covers the active debt
+        if (p.debt > (rem * LTV) / WAD) revert LowCollateral();
+        
+        p.collateral = rem;
+        (bool s,) = payable(msg.sender).call{value: amount}("");
+        if (!s) revert Fail();
+        emit Withdraw(msg.sender, amount);
+    }
+
+    function borrow(uint256 amount) external lock {
+        if (amount == 0) revert Zero();
+        Position storage p = positions[msg.sender];
+        // check LTV limit before issuing debt
+        if (p.debt + amount > (p.collateral * LTV) / WAD) revert LowCollateral();
+        
+        p.debt += amount;
+        (bool s,) = payable(msg.sender).call{value: amount}("");
+        if (!s) revert Fail();
+        emit Borrow(msg.sender, amount);
+    }
+
+    function repay() external payable lock {
+        if (msg.value == 0) revert Zero();
+        Position storage p = positions[msg.sender];
+        uint256 paid = msg.value > p.debt ? p.debt : msg.value;
+        p.debt -= paid;
+        
+        // send back overpaid ETH
+        if (msg.value > paid) {
+            (bool s,) = payable(msg.sender).call{value: msg.value - paid}("");
+            if (!s) revert Fail();
+        }
+        emit Repay(msg.sender, paid);
+    }
+
+    function liquidate(address user) external payable lock {
+       if (msg.value == 0) revert Zero();
+        Position storage p = positions[user];
+      if (p.debt == 0) revert Zero();
+      // position must be underwater (health factor < 1)
+      if (p.debt <= (p.collateral * LTV) / WAD) revert Healthy();
+      if (msg.value < p.debt) revert BadRepay();
+
+        uint256 col = p.collateral;
+        uint256 dbt = p.debt;
+        delete positions[user]; // clear bad position
+
+        (bool s1,) = payable(msg.sender).call{value: col}("");
+        if (!s1) revert Fail();
+
+        // refund excess msg.value to liquidator
+        if (msg.value > dbt) {
+            (bool s2,) = payable(msg.sender).call{value: msg.value - dbt}("");
+            if (!s2) revert Fail();
+        }
+        emit Liquidated(user, msg.sender, col);
+    }
+
+    function healthFactor(address user) external view returns (uint256) {
+        Position memory p = positions[user];
+        if (p.debt == 0) return type(uint256).max;
+        return (p.collateral * LTV) / p.debt;
+    }
+
+    function getPosition(address user) external view returns (uint256, uint256, uint256) {
+      Position memory pos = positions[user];
+        uint256 limit = (pos.collateral * LTV) / WAD;
+      uint256 avail = limit > pos.debt ? limit - pos.debt : 0;
+        return (pos.collateral, pos.debt, avail);
+    }
+}
